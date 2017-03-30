@@ -6,8 +6,8 @@
 \usage{
 scidbconnect(host = getOption("scidb.default_shim_host", "127.0.0.1"),
   port = getOption("scidb.default_shim_port", 8080L), username, password,
-  password_digest = FALSE, auth_type = c("scidb", "digest"),
-  protocol = c("http", "https"), doc)
+  auth_type = c("scidb", "digest"), protocol = c("http", "https"),
+  int64 = FALSE, doc)
 }
 \arguments{
 \item{host}{optional host name or I.P. address of a SciDB shim service to connect to}
@@ -21,6 +21,10 @@ scidbconnect(host = getOption("scidb.default_shim_host", "127.0.0.1"),
 \item{auth_type}{optional SciDB authentication type}
 
 \item{protocol}{optional shim protocol type}
+
+\item{int64}{logical value, if \code{TRUE} then preserve signed 64-bit SciDB integers
+as R integer64 values from the bit64 package. Otherwise, 64-bit integers from SciDB
+are converted to R double values, possibly losing precision.}
 
 \item{doc}{optional AFL operator/macro documentation (see notes)}
 }
@@ -59,7 +63,7 @@ All arguments support partial matching.
 db <- scidbconnect()
 
 # SciDB 15.12 authentication example (using shim's default HTTPS port 8083)
-db <- scidbconnect(user="root", password="Paradigm4", auth_type="scidb", port=8083)
+db <- scidbconnect(user="root", password="Paradigm4", auth_type="scidb", port=8083, protocol="https")
 
 # List available AFL operators
 names(db)

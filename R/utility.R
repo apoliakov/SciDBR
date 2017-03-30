@@ -12,9 +12,9 @@
 store = function(db, expr, name, eval=TRUE, gc=TRUE, temp=FALSE)
 {
   ans = eval(expr)
-  if(!(inherits(ans, "scidb"))) return(ans)
+  if (!(inherits(ans, "scidb"))) return(ans)
 # If expr is a stored temp array, then re-use its name
-  if(!is.null(ans@meta$temp) && ans@meta$temp && missing(name)) name=ans@name
+  if (!is.null(ans@meta$temp) && ans@meta$temp && missing(name)) name=ans@name
   .scidbeval(db, ans@name, `eval`=eval, name=name, gc=gc, schema=schema(ans), temp=temp)
 }
 
@@ -22,14 +22,16 @@ store = function(db, expr, name, eval=TRUE, gc=TRUE, temp=FALSE)
 #' @param db scidb connection object from \code{\link{scidbconnect}}
 #' @param name a character string name of a stored SciDB array or a valid SciDB AFL expression
 #' @param gc a logical value, \code{TRUE} means connect the SciDB array to R's garbage collector
+#' @param schema optional SciDB array schema, if specified avoid an extra metadata query to determine array schema.
+#'        Use this option with care, the schema must exactly match the SciDB array result.
 #' @return a \code{scidb} object
 #' @importFrom methods new show
 #' @export
-scidb = function(db, name, gc=FALSE)
+scidb = function(db, name, gc=FALSE, schema)
 {
   stopifnot(inherits(db, "afl"))
-  if(missing(name)) stop("array or expression must be specified")
-  if(inherits(name, "scidb"))
+  if (missing(name)) stop("array or expression must be specified")
+  if (inherits(name, "scidb"))
   {
     query = name@name
     return(.scidbeval(db, name@name, eval=FALSE, gc=gc, depend=list(name)))
@@ -38,12 +40,13 @@ scidb = function(db, name, gc=FALSE)
   obj = new("scidb", name=name)
   obj@meta = new.env()
   obj@meta$db = db
-  delayedAssign("state", lazyeval(db, name), assign.env=obj@meta)
+  if (missing(schema)) delayedAssign("state", lazyeval(db, name), assign.env=obj@meta)
+  else assign("state", list(schema=schema), envir=obj@meta)
   delayedAssign("schema", get("state")$schema, eval.env=obj@meta, assign.env=obj@meta)
 
-  if(gc)
+  if (gc)
   {
-    if(length(grep("\\(", name)) == 0)
+    if (length(grep("\\(", name)) == 0)
     {
       obj@meta$name = name
     }
@@ -52,7 +55,7 @@ scidb = function(db, name, gc=FALSE)
         {
           if (e$remove && exists("name", envir=e))
             {
-              if(grepl(sprintf("%s$", getuid(e$db)), e$name)) scidbquery(db, sprintf("remove(%s)", e$name), release=1)
+              if (grepl(sprintf("%s$", getuid(e$db)), e$name)) scidbquery(db, sprintf("remove(%s)", e$name), release=1)
             }
         }, onexit = TRUE)
   }
@@ -67,6 +70,9 @@ scidb = function(db, name, gc=FALSE)
 #' @param password optional authentication password
 #' @param auth_type optional SciDB authentication type
 #' @param protocol optional shim protocol type
+#' @param int64 logical value, if \code{TRUE} then preserve signed 64-bit SciDB integers
+#' as R integer64 values from the bit64 package. Otherwise, 64-bit integers from SciDB
+#' are converted to R double values, possibly losing precision.
 #' @param doc optional AFL operator/macro documentation (see notes)
 #' @note
 #' Use the optional \code{username} and \code{password} arguments with
@@ -97,7 +103,7 @@ scidb = function(db, name, gc=FALSE)
 #' db <- scidbconnect()
 #'
 #' # SciDB 15.12 authentication example (using shim's default HTTPS port 8083)
-#' db <- scidbconnect(user="root", password="Paradigm4", auth_type="scidb", port=8083)
+#' db <- scidbconnect(user="root", password="Paradigm4", auth_type="scidb", port=8083, protocol="https")
 #'
 #' # List available AFL operators
 #' names(db)
@@ -120,72 +126,70 @@ scidb = function(db, name, gc=FALSE)
 scidbconnect = function(host=getOption("scidb.default_shim_host", "127.0.0.1"),
                         port=getOption("scidb.default_shim_port", 8080L),
                         username, password,
-                        password_digest=FALSE,  #set this to TRUE if connecting to an older SciDB version
                         auth_type=c("scidb", "digest"), protocol=c("http", "https"),
+                        int64=FALSE,
                         doc)
 {
-  .scidbenv = list() # connection state
-  auth_type = match.arg(auth_type)
-  protocol = match.arg(protocol)
-  .scidbenv$host = host
-  .scidbenv$port = port
-  .scidbenv$protocol = protocol
-  if(missing(username)) username = c()
-  if(missing(password)) password = c()
-# Check for login using either scidb or HTTP digest authentication
-  if(!is.null(username))
-  {
-    .scidbenv$authtype = auth_type
-    .scidbenv$authenv = new.env()
-    if(auth_type=="scidb")
-    {
-      .scidbenv$username = username
-      if(!password_digest)
-      {
-        #16.9 no longer hashes the password
-        .scidbenv$password = password
-      } else 
-      {
-        .scidbenv$password = base64_encode(digest(charToRaw(password), serialize=FALSE, raw=TRUE, algo="sha512"))
-      }
-    } else # HTTP basic digest auth
-    {
-      .scidbenv$digest = paste(username, password, sep=":")
-    }
-  }
 # Set up a db object
   db = list()
   class(db) = "afl"
-  attr(db, "connection") = .scidbenv   # temporary assignment
-  shim.version = SGET(db, "/version")
+  attr(db, "connection") = list() # connection state
+  auth_type = match.arg(auth_type)
+  protocol = match.arg(protocol)
+  attr(db, "connection")$host = host
+  attr(db, "connection")$port = port
+  attr(db, "connection")$protocol = protocol
+  attr(db, "connection")$int64 = int64
 
 # Update the scidb.version in the db connection environment
+  shim.version = SGET(db, "/version")
   v = strsplit(gsub("[A-z\\-]", "", gsub("-.*", "", shim.version)), "\\.")[[1]]
-  if(length(v) < 2) v = c(v, "1")
-  .scidbenv$scidb.version = sprintf("%s.%s", v[1], v[2])
+  if (length(v) < 2) v = c(v, "1")
+  attr(db, "connection")$scidb.version = sprintf("%s.%s", v[1], v[2])
+
+# set this to TRUE if connecting to an older SciDB version than 16.9
+  password_digest = ! at_least(attr(db, "connection")$scidb.version, "16.9")
+
+  if (missing(username)) username = c()
+  if (missing(password)) password = c()
+# Check for login using either scidb or HTTP digest authentication
+  if (!is.null(username))
+  {
+    attr(db, "connection")$authtype = auth_type
+    attr(db, "connection")$authenv = new.env()
+    if (auth_type=="scidb")
+    {
+      attr(db, "connection")$protocol = "https"
+      attr(db, "connection")$username = username
+      if (password_digest)
+        attr(db, "connection")$password = base64_encode(digest(charToRaw(password), serialize=FALSE, raw=TRUE, algo="sha512"))
+      else #16.9 no longer hashes the password
+        attr(db, "connection")$password = password
+    } else # HTTP basic digest auth
+    {
+      attr(db, "connection")$digest = paste(username, password, sep=":")
+    }
+  }
 
 
 # Use the query ID from a query as a unique ID for automated
 # array name generation.
   x = tryCatch(
         scidbquery(db, query="list('libraries')", release=1, resp=TRUE),
-        error=function(e) stop("Connection error"))
-  if(is.null(.scidbenv$id))
+        error=function(e) stop("Connection error"), warning=invisible)
+  if (is.null(attr(db, "connection")$id))
   {
     id = tryCatch(strsplit(x$response, split="\\r\\n")[[1]],
-           error=function(e) stop("Connection error"))
-    .scidbenv$id = id[[length(id)]]
+           error=function(e) stop("Connection error"), warning=invisible)
+    attr(db, "connection")$id = id[[length(id)]]
   }
-  attr(db, "connection") = .scidbenv   # updated state
 
 # Update available operators and macros and return afl object
-  ops = iquery(db, "merge(redimension(project(list('operators'), name), <name:string>[i=0:*,1000000,0]), redimension(apply(project(list('macros'), name), i, No + 1000000), <name:string>[i=0:*,1000000,0]))", `return`=TRUE, binary=FALSE)[,2]
-  .scidbenv$ops = ops
-  attr(db, "connection") = .scidbenv   # updated state
-  if(missing(doc)) return (update.afl(db, ops))
+  ops = iquery(db, "merge(redimension(project(list('operators'), name), <name:string>[i=0:*,1000000,0]), redimension(apply(project(list('macros'), name), i, No + 1000000), <name:string>[i=0:*,1000000,0]))", `return`=TRUE, binary=FALSE)[, 2]
+  attr(db, "connection")$ops = ops
+  if (missing(doc)) return (update.afl(db, ops))
 
-  .scidbenv$doc = doc
-  attr(db, "connection") = .scidbenv   # updated state
+  attr(db, "connection")$doc = doc
   update.afl(db, ops, doc)
 }
 
@@ -193,26 +197,38 @@ scidbconnect = function(host=getOption("scidb.default_shim_host", "127.0.0.1"),
 # binary=FALSE is needed by some queries, don't get rid of it.
 #' Run a SciDB query, optionally returning the result.
 #' @param db a scidb database connection from \code{\link{scidbconnect}}
-#' @param query a single SciDB query string
+#' @param query a single SciDB query string or scidb array object
 #' @param return if \code{TRUE}, return the result
 #' @param binary set to \code{FALSE} to read result from SciDB in text form
-#' @param ... additional options passed to \code{read.table} when \code{binary=FALSE}
+#' @param ... additional options passed to \code{read.table} when \code{binary=FALSE},
+#' or optional result schema when \code{binary=TRUE} (see note below).
+#' @note When \code{query} is an arbitrary AFL query string and \code{binary=TRUE},
+#'   optionally specify \code{schema} with a valid result array schema to skip
+#'   an extra metadata lookup query (see \code{\link{scidb}}).
+#'
+#' Setting \code{return=TRUE} wrapes the AFL \code{query} expression with a SciDB
+#' save operator, saving the data on the SciDB server in either binary or text
+#' format depending on the value of the \code{binary} parameter. Please note that
+#' some AFL expressions may not be "saved" using the AFL save operator, including
+#' for instance the AFL create_array operator. Trying to return the result of such
+#' a SciDB expression will result in a run-time error.
+#' @seealso \code{\link{scidb}} \code{\link{as.R}}
 #' @importFrom utils read.table
 #' @export
 iquery = function(db, query, `return`=FALSE, binary=TRUE, ...)
 {
   DEBUG = getOption("scidb.debug", FALSE)
-  if(inherits(query, "scidb"))  query = query@name
+  if (inherits(query, "scidb"))  query = query@name
   n = -1    # Indicate to shim that we want all the output
-  if(`return`)
+  if (`return`)
   {
-    if(binary) return(scidb_unpack_to_dataframe(db, query, ...))
+    if (binary) return(scidb_unpack_to_dataframe(db, query, ...))
 
     ans = tryCatch(
        {
         # SciDB save syntax changed in 15.12
-        if(newer_than(attr(db, "connection")$scidb.version, 15.12))
-        { 
+        if (at_least(attr(db, "connection")$scidb.version, 15.12))
+        {
           sessionid = scidbquery(db, query, save="csv+:l", release=0)
         } else sessionid = scidbquery(db, query, save="csv+", release=0)
         dt1 = proc.time()
@@ -227,28 +243,28 @@ iquery = function(db, query, `return`=FALSE, binary=TRUE, ...)
              stop(e)
           })
         SGET(db, "/release_session", list(id=sessionid), err=FALSE)
-        if(DEBUG) cat("Data transfer time",(proc.time() - dt1)[3],"\n")
+        if (DEBUG) cat("Data transfer time", (proc.time() - dt1)[3], "\n")
         dt1 = proc.time()
 # Handle escaped quotes
-        result = gsub("\\\\'","''", result, perl=TRUE)
-        result = gsub("\\\\\"","''", result, perl=TRUE)
+        result = gsub("\\\\'", "''", result, perl=TRUE)
+        result = gsub("\\\\\"", "''", result, perl=TRUE)
 # Map SciDB missing (aka null) to NA, but preserve DEFAULT null.
 # This sucky parsing is not a problem for binary transfers.
-        result = gsub("DEFAULT null","@#@#@#kjlkjlkj@#@#@555namnsaqnmnqqqo", result, perl=TRUE)
-        result = gsub("null","NA", result, perl=TRUE)
-        result = gsub("@#@#@#kjlkjlkj@#@#@555namnsaqnmnqqqo","DEFAULT null", result, perl=TRUE)
+        result = gsub("DEFAULT null", "@#@#@#kjlkjlkj@#@#@555namnsaqnmnqqqo", result, perl=TRUE)
+        result = gsub("null", "NA", result, perl=TRUE)
+        result = gsub("@#@#@#kjlkjlkj@#@#@555namnsaqnmnqqqo", "DEFAULT null", result, perl=TRUE)
         val = textConnection(result)
         ret = c()
-        if(length(val) > 0)
+        if (length(val) > 0)
           ret = tryCatch(read.table(val, sep=",", stringsAsFactors=FALSE, header=TRUE, ...),
                 error = function(e) stop("SciDB query error"))
         close(val)
-        if(DEBUG) cat("R parsing time",(proc.time()-dt1)[3],"\n")
+        if (DEBUG) cat("R parsing time", (proc.time()-dt1)[3], "\n")
         ret
        }, error = function(e)
            {
              stop(e)
-           })
+           }, warning=invisible)
       return(ans)
   } else
   {
@@ -265,6 +281,20 @@ iquery = function(db, query, `return`=FALSE, binary=TRUE, ...)
 #' @param start starting SciDB integer coordinate index (does not apply to data frames)
 #' @param gc set to FALSE to disconnect the SciDB array from R's garbage collector
 #' @param ... other options, see \code{\link{df2scidb}}
+#' @note Supported R objects include data frames, scalars, vectors, dense matrices,
+#' and double-precision sparse matrices of class CsparseMatrix. Supported R scalar
+#' types and their resulting SciDB types are:
+#'  \itemize{
+#'  \item{integer   -> }{int32}
+#'  \item{logical   -> }{int32}
+#'  \item{character -> }{string}
+#'  \item{double    -> }{double}
+#'  \item{integer64 -> }{int64}
+#'  \item{raw       -> }{binary}
+#'  \item{Date      -> }{datetime}
+#' }
+#' R factor values are converted to their corresponding character levels.
+#' @seealso \code{\link{as.R}}
 #' @return A \code{scidb} object
 #' @export
 as.scidb = function(db, x,
@@ -272,19 +302,19 @@ as.scidb = function(db, x,
                     start,
                     gc=TRUE, ...)
 {
-  if(missing(name))
+  if (missing(name))
   {
     name = tmpnam(db)
   }
-  if(inherits(x, "raw"))
+  if (inherits(x, "raw"))
   {
-    return(raw2scidb(db, x, name=name, gc=gc,...))
+    return(raw2scidb(db, x, name=name, gc=gc, ...))
   }
-  if(inherits(x, "data.frame"))
+  if (inherits(x, "data.frame"))
   {
     return(df2scidb(db, x, name=name, gc=gc, ...))
   }
-  if(inherits(x, "dgCMatrix"))
+  if (inherits(x, "dgCMatrix"))
   {
     return(.Matrix2scidb(db, x, name=name, start=start, gc=gc, ...))
   }
@@ -294,35 +324,57 @@ as.scidb = function(db, x,
 #' Download SciDB data to R
 #' @param x a \code{\link{scidb}} object (a SciDB array or expression)
 #' @param only_attributes optional logical argument, if \code{TRUE} do not download SciDB dimensions
+#' @param binary optional logical value, set to \code{FALSE} to download data using text format (useful for some unsupported SciDB types)
 #' @return An R \code{\link{data.frame}}
 #' @note This convenience function is equivalent to running \code{iquery(db, x, return=TRUE)} for
 #' a SciDB connection object \code{s}.
+#'
+#' SciDB values are always returned as R data frames. SciDB scalar types are converted to
+#' corresponding R types as follows:
+#'  \itemize{
+#'    \item{double   -> }{double}
+#'    \item{int64    -> }{integer64}
+#'    \item{uint64   -> }{double}
+#'    \item{uint32   -> }{double}
+#'    \item{int32    -> }{integer}
+#'    \item{int16    -> }{integer}
+#'    \item{unit16   -> }{integer}
+#'    \item{int8     -> }{integer}
+#'    \item{uint8    -> }{integer}
+#'    \item{bool     -> }{logical}
+#'    \item{string   -> }{character}
+#'    \item{char     -> }{character}
+#'    \item{binary   -> }{raw}
+#'    \item{datetime -> }{Date}
+#' }
+#' @seealso \code{\link{as.scidb}}
 #' @examples
 #' \dontrun{
-#' s = scidbconnect()
-#' x = scidb(s, "build(<v:double>[i=1:5], sin(i))")
+#' db <- scidbconnect()
+#' x <- scidb(s, "build(<v:double>[i=1:5], sin(i))")
 #' as.R(x)
-#'#  i          v
-#'#1 1  0.8414710
-#'#2 2  0.9092974
-#'#3 3  0.1411200
-#'#4 4 -0.7568025
-#'#5 5 -0.9589243
+#'## i          v
+#'## 1  0.8414710
+#'## 2  0.9092974
+#'## 3  0.1411200
+#'## 4 -0.7568025
+#'## 5 -0.9589243
 #'
 #' as.R(x, only_attributes=TRUE)
-#'#           v
-#'#1  0.8414710
-#'#2  0.9092974
-#'#3  0.1411200
-#'#4 -0.7568025
-#'#5 -0.9589243
+#'##          v
+#'##  0.8414710
+#'##  0.9092974
+#'##  0.1411200
+#'## -0.7568025
+#'## -0.9589243
 #' }
 #' @export
-as.R = function(x, only_attributes=FALSE)
+as.R = function(x, only_attributes=FALSE, binary=TRUE)
 {
   stopifnot(inherits(x, "scidb"))
-  if(only_attributes) return(scidb_unpack_to_dataframe(x@meta$db, x, only_attributes=TRUE))
-  scidb_unpack_to_dataframe(x@meta$db, x)
+  if (is.null(schema(x, "dimensions"))) only_attributes = TRUE
+  if (only_attributes) return(scidb_unpack_to_dataframe(x@meta$db, x, only_attributes=TRUE))
+  scidb_unpack_to_dataframe(x@meta$db, x, binary=binary)
 }
 
 #' Register an AFL prefix expression
@@ -347,9 +399,25 @@ as.R = function(x, only_attributes=FALSE)
 scidb_prefix = function(db, expression=NULL)
 {
   stopifnot(inherits(db, "afl"))
-  if(is.null(expression)) attributes(db)$connection$prefix = c()
+  if (is.null(expression)) attributes(db)$connection$prefix = c()
   else attributes(db)$connection$prefix = expression
-  if(is.null(db$connection$doc))
+  if (is.null(db$connection$doc))
     return(update.afl(db, attributes(db)$connection$ops))
   update.afl(db, attributes(db)$connection$ops, attributes(db)$connection$doc)
+}
+
+
+#' Simple utility to interactively enter a password without showing it on the screen
+#'
+#' @param prompt a text prompt to display, defaults to "Password:"
+#' @export
+getpwd = function(prompt="Password:")
+{
+  if (grepl("mingw", R.version["os"])) return(readline(sprintf("%s ", prompt)))
+  cat(prompt, " ")
+  system("stty -echo")
+  a = readline()
+  system("stty echo")
+  cat("\n")
+  a
 }

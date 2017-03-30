@@ -1,12 +1,12 @@
 .scidbstr = function(object)
 {
   name = substr(object@name, 1, 35)
-  if(nchar(object@name) > 35) name = paste(name, "...", sep="")
+  if (nchar(object@name) > 35) name = paste(name, "...", sep="")
   cat("SciDB expression ", name)
   cat("\nSciDB schema ", schema(object), "\n")
   dims = schema(object, "dimensions")
   atts = schema(object, "attributes")
-  d = data.frame(variable=dims$name, dimension=TRUE, type="int64", nullable=FALSE, start=dims$start, end=dims$end, chunk=dims$chunk, row.names=NULL, stringsAsFactors=FALSE)
+  d = tryCatch(data.frame(variable=dims$name, dimension=TRUE, type="int64", nullable=FALSE, start=dims$start, end=dims$end, chunk=dims$chunk, row.names=NULL, stringsAsFactors=FALSE), error=function(e) NULL)
   d = rbind(d, data.frame(variable=atts$name,
                           dimension=FALSE,
                           type=atts$type, nullable=atts$nullable, start="", end="", chunk=""))
@@ -17,7 +17,7 @@
 .aflstr = function(object)
 {
   conn = attr(object, "connection")
-  if(is.null(attributes(object)$connection$prefix)) return(message(sprintf("SciDB database connection %s:%s\nUse $ to access AFL operators; `ls` on this object lists SciDB arrays.", conn$host, conn$port)))
+  if (is.null(attributes(object)$connection$prefix)) return(message(sprintf("SciDB database connection %s:%s\nUse $ to access AFL operators; `ls` on this object lists SciDB arrays.", conn$host, conn$port)))
   message(sprintf("SciDB database connection %s:%s\nPrefix expression: %s\nUse $ to access AFL operators; `ls` on this object lists SciDB arrays.", conn$host, conn$port, attributes(object)$connection$prefix))
 }
 
@@ -116,7 +116,7 @@ setGeneric("ls")
 #' @param name \code{afl} SciDB connection object from \code{\link{scidbconnect}}
 #' @return a \code{data.frame} listing the contents of the database
 #' @export
-setMethod("ls", signature(name="afl"), 
+setMethod("ls", signature(name="afl"),
   function(name) {
     iquery(name, "list()", return=TRUE)
   })
@@ -145,9 +145,9 @@ setGeneric("%as%", function(x, y) standardGeneric("%as%"))
 #' in AFL expressions written in R.
 #' @examples
 #' \dontrun{
-#' # s = scidbconnect()
-#' # x = scidb(s, "build(<v:double>[i=1:2,1,0], i)")
-#' # x %as% y
+#' db <- scidbconnect()
+#' x <- scidb(db, "build(<v:double>[i=1:2,1,0], i)")
+#' x %as% y
 #' }
 #' @method %as% scidb ANY
 #' @export
@@ -163,5 +163,5 @@ setMethod("%as%", signature(x="scidb", y="ANY"),
 `$.scidb` = function(x, ...)
 {
   a = as.character(as.list(match.call())[[3]])
-  attributes(x)$meta$db$project(x, R(a))
+  attributes(x)$meta$db$project(x, a)
 }
